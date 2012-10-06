@@ -23,6 +23,9 @@ AC_TYPE_SIZE_T
 AC_FUNC_MALLOC
 AC_FUNC_REALLOC
 AC_CHECK_FUNCS([memset socket strstr strchr])
-
+AC_CHECK_LIB(pthread, pthread_create, [], [
+				       echo "This library requires pthread"
+				       exit -1
+				       ])
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT

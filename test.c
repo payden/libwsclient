@@ -20,9 +20,8 @@ int main(int argc, char **argv) {
 		fprintf(stderr, "Unable to initialize new WS client.\n");
 		exit(1);
 	}
-	client->onopen = &onopen;
-	client->onmessage = &onmessage;
-	libwsclient_send(client, "Testing");
+	libwsclient_onopen(client, &onopen);
+	libwsclient_onmessage(client, &onmessage);
 	libwsclient_run(client);
 	return 0;
 }

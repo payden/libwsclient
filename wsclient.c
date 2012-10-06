@@ -17,6 +17,16 @@
 void libwsclient_run(wsclient *c) {
 	char buf[1024];
 	int n, i;
+	pthread_mutex_lock(&c->lock);
+	if(c->flags & CLIENT_CONNECTING) {
+		pthread_mutex_unlock(&c->lock);
+		pthread_join(c->handshake_thread, NULL);
+		pthread_mutex_lock(&c->lock);
+		c->flags &= ~CLIENT_CONNECTING;
+		free(c->URI);
+		c->URI = NULL;
+	}
+	pthread_mutex_unlock(&c->lock);
 	do {
 		memset(buf, 0, 1024);
 		n = recv(c->sockfd, buf, 1023, 0);
@@ -29,6 +39,18 @@ void libwsclient_run(wsclient *c) {
 	}
 	close(c->sockfd);
 	free(c);
+}
+
+void libwsclient_onopen(wsclient *client, int (*cb)(void)) {
+	pthread_mutex_lock(&client->lock);
+	client->onopen = cb;
+	pthread_mutex_unlock(&client->lock);
+}
+
+void libwsclient_onmessage(wsclient *client, int (*cb)(libwsclient_message *msg)) {
+	pthread_mutex_lock(&client->lock);
+	client->onmessage = cb;
+	pthread_mutex_unlock(&client->lock);
 }
 
 void libwsclient_in_data(wsclient *c, char in) {
@@ -201,6 +223,38 @@ int libwsclient_open_connection(const char *host, const char *port) {
 }
 
 wsclient *libwsclient_new(const char *URI) {
+	wsclient *client = NULL;
+
+	client = (wsclient *)malloc(sizeof(wsclient));
+	if(!client) {
+		fprintf(stderr, "Unable to allocate memory in libwsclient_new.\n");
+		exit(1);
+	}
+	memset(client, 0, sizeof(wsclient));
+	if(pthread_mutex_init(&client->lock, NULL) != 0) {
+		fprintf(stderr, "Unable to init mutex in libwsclient_new.\n");
+		exit(5);
+	}
+	pthread_mutex_lock(&client->lock);
+	client->URI = (char *)malloc(strlen(URI)+1);
+	if(!client->URI) {
+		fprintf(stderr, "Unable to allocate memory in libwsclient_new.\n");
+		exit(3);
+	}
+	memset(client->URI, 0, strlen(URI)+1);
+	strncpy(client->URI, URI, strlen(URI));
+	client->flags |= CLIENT_CONNECTING;
+	pthread_mutex_unlock(&client->lock);
+
+	if(pthread_create(&(client->handshake_thread), NULL, libwsclient_handshake_thread, (void *)client)) {
+		perror("pthread");
+		exit(4);
+	}
+	return client;
+}
+void *libwsclient_handshake_thread(void *ptr) {
+	wsclient *client = (wsclient *)ptr;
+	const char *URI = client->URI;
 	SHA1Context shactx;
 	const char *UUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 	char pre_encode[256];
@@ -217,12 +271,6 @@ wsclient *libwsclient_new(const char *URI) {
 	char recv_buf[1024];
 	char *URI_copy = NULL, *p = NULL, *rcv = NULL, *tok = NULL;
 	int i, z, sockfd, n, flags = 0, headers_space = 1024;
-	wsclient *client = (wsclient *)malloc(sizeof(wsclient));
-	if(!client) {
-		fprintf(stderr, "Unable to allocate memory in libwsclient_new.\n");
-		exit(1);
-	}
-	memset(client, 0, sizeof(wsclient));
 	URI_copy = (char *)malloc(strlen(URI)+1);
 	if(!URI_copy) {
 		fprintf(stderr, "Unable to allocate memory in libwsclient_new.\n");
@@ -254,11 +302,15 @@ wsclient *libwsclient_new(const char *URI) {
 				strncpy(port, "80", 9);
 			} else {
 				strncpy(port, "443", 9);
+				pthread_mutex_lock(&client->lock);
 				client->flags |= CLIENT_IS_SSL;
+				pthread_mutex_unlock(&client->lock);
 			}
 		} else {
 			i++;
 			p = strchr(URI_copy+i, '/');
+			if(!p)
+				p = strchr(URI_copy+i, '\0');
 			strncpy(port, URI_copy+i, (p - (URI_copy+i)));
 			port[p-(URI_copy+i)] = '\0';
 			i += p-(URI_copy+i);
@@ -271,7 +323,9 @@ wsclient *libwsclient_new(const char *URI) {
 		fprintf(stderr, "Error opening socket.\n");
 		exit(5);
 	}
+	pthread_mutex_lock(&client->lock);
 	client->sockfd = sockfd;
+	pthread_mutex_unlock(&client->lock);
 
 	//perform handshake
 	//generate nonce
@@ -358,7 +412,13 @@ wsclient *libwsclient_new(const char *URI) {
 	}
 
 
-	return client;
+	pthread_mutex_lock(&client->lock);
+	client->flags &= ~CLIENT_CONNECTING;
+	if(client->onopen != NULL) {
+		client->onopen();
+	}
+	pthread_mutex_unlock(&client->lock);
+	return NULL;
 }
 
 //somewhat hackish stricmp
@@ -375,11 +435,22 @@ int stricmp(const char *s1, const char *s2) {
 }
 
 int libwsclient_send(wsclient *client, char *strdata)  {
+	pthread_mutex_lock(&client->lock);
+	if(client->flags & CLIENT_CONNECTING) {
+		pthread_mutex_unlock(&client->lock);
+		pthread_join(client->handshake_thread, NULL);
+		pthread_mutex_lock(&client->lock);
+		client->flags &= ~CLIENT_CONNECTING;
+		free(client->URI);
+		client->URI = NULL;
+	}
+	int sockfd = client->sockfd;
+	pthread_mutex_unlock(&client->lock);
 	if(strdata == NULL) {
 		fprintf(stderr, "NULL pointer psased to libwsclient_send\n");
 		return -1;
 	}
-	int sockfd = client->sockfd;
+
 	struct timeval tv;
 	unsigned char mask[4];
 	unsigned int mask_int;
