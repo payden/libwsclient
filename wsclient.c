@@ -497,6 +497,11 @@ int stricmp(const char *s1, const char *s2) {
 
 int libwsclient_send(wsclient *client, char *strdata)  {
 	pthread_mutex_lock(&client->lock);
+	if(client->flags & CLIENT_SENT_CLOSE_FRAME) {
+		fprintf(stderr, "Trying to send data after sending close frame.  Not sending.\n");
+		pthread_mutex_unlock(&client->lock);
+		return 0;
+	}
 	if(client->flags & CLIENT_CONNECTING) {
 		pthread_mutex_unlock(&client->lock);
 		pthread_join(client->handshake_thread, NULL);
