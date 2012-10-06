@@ -8,14 +8,166 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 
+#include <pthread.h>
+
 #include "wsclient.h"
 #include "sha1.h"
 
-int libwsclient_run(wsclient *c) {
 
+void libwsclient_run(wsclient *c) {
+	char buf[1024];
+	int n, i;
+	do {
+		memset(buf, 0, 1024);
+		n = recv(c->sockfd, buf, 1023, 0);
+		for(i = 0; i < n; i++)
+			libwsclient_in_data(c, buf[i]);
+
+	} while(n > 0);
+	if(n == -1) {
+		perror("recv");
+	}
+	close(c->sockfd);
+	free(c);
 }
 
+void libwsclient_in_data(wsclient *c, char in) {
+	libwsclient_frame *current = NULL, *new = NULL;
+	unsigned char payload_len_short;
+	if(c->current_frame == NULL) {
+		c->current_frame = (libwsclient_frame *)malloc(sizeof(libwsclient_frame));
+		memset(c->current_frame, 0, sizeof(libwsclient_frame));
+		c->current_frame->payload_len = -1;
+		c->current_frame->rawdata_sz = FRAME_CHUNK_LENGTH;
+		c->current_frame->rawdata = (char *)malloc(c->current_frame->rawdata_sz);
+		memset(c->current_frame->rawdata, 0, c->current_frame->rawdata_sz);
+	}
+	current = c->current_frame;
+	if(current->rawdata_idx >= current->rawdata_sz) {
+		current->rawdata_sz += FRAME_CHUNK_LENGTH;
+		current->rawdata = (char *)realloc(current->rawdata, current->rawdata_sz);
+		memset(current->rawdata + current->rawdata_idx, 0, current->rawdata_sz - current->rawdata_idx);
+	}
+	*(current->rawdata + current->rawdata_idx++) = in;
+	if(libwsclient_complete_frame(current) == 1) {
+		if(current->fin == 1) {
+			//is control frame
+			if((current->opcode & 0x08) == 0x08) {
+				//handle control frame
+			} else {
+				libwsclient_dispatch_message(c, current);
+				c->current_frame = NULL;
+			}
+		} else {
+			new = (libwsclient_frame *)malloc(sizeof(libwsclient_frame));
+			memset(new, 0, sizeof(libwsclient_frame));
+			new->payload_len = -1;
+			new->rawdata = (char *)malloc(FRAME_CHUNK_LENGTH);
+			memset(new->rawdata, 0, FRAME_CHUNK_LENGTH);
+			new->prev_frame = current;
+			current->next_frame = new;
+			c->current_frame = new;
+		}
+	}
+}
 
+void libwsclient_dispatch_message(wsclient *c, libwsclient_frame *current) {
+	unsigned long long message_payload_len, message_offset;
+	int message_opcode, i;
+	char *message_payload;
+	libwsclient_frame *first = NULL;
+	libwsclient_message *msg = NULL;
+	if(current == NULL) {
+		fprintf(stderr, "Somehow, null pointer passed to libwsclient_dispatch_message.\n");
+		exit(1);
+	}
+	message_offset = 0;
+	message_payload_len = current->payload_len;
+	for(;current->prev_frame != NULL;current = current->prev_frame) {
+		message_payload_len += current->payload_len;
+	}
+	first = current;
+	message_opcode = current->opcode;
+	message_payload = (char *)malloc(message_payload_len + 1);
+	memset(message_payload, 0, message_payload_len + 1);
+	for(;current != NULL; current = current->next_frame) {
+		memcpy(message_payload + message_offset, current->rawdata + current->payload_offset, current->payload_len);
+		message_offset += current->payload_len;
+	}
+
+
+	libwsclient_cleanup_frames(first);
+	msg = (libwsclient_message *)malloc(sizeof(libwsclient_message));
+	memset(msg, 0, sizeof(libwsclient_message));
+	msg->opcode = message_opcode;
+	msg->payload_len = message_offset;
+	msg->payload = message_payload;
+	if(c->onmessage != NULL) {
+		c->onmessage(msg);
+	} else {
+		fprintf(stderr, "No onmessage call back registered with libwsclient.\n");
+	}
+	free(msg->payload);
+	free(msg);
+}
+void libwsclient_cleanup_frames(libwsclient_frame *first) {
+	libwsclient_frame *this = NULL;
+	libwsclient_frame *next = first;
+	while(next != NULL) {
+		this = next;
+		next = this->next_frame;
+		if(this->rawdata != NULL) {
+			free(this->rawdata);
+		}
+		free(this);
+	}
+}
+
+int libwsclient_complete_frame(libwsclient_frame *frame) {
+	int payload_len_short, i;
+	unsigned long long payload_len = 0;
+	if(frame->rawdata_idx < 2) {
+		return 0;
+	}
+	frame->fin = (*(frame->rawdata) & 0x80) == 0x80 ? 1 : 0;
+	frame->opcode = *(frame->rawdata) & 0x0f;
+	frame->payload_offset = 2;
+	if((*(frame->rawdata+1) & 0x80) != 0x0) {
+		fprintf(stderr, "Received masked frame from server.  FAIL\n");
+		exit(1);
+	}
+	payload_len_short = *(frame->rawdata+1) & 0x7f;
+	switch(payload_len_short) {
+	case 126:
+		if(frame->rawdata_idx < 4) {
+			return 0;
+		}
+		for(i = 0; i < 2; i++) {
+			memcpy((void *)&payload_len+i, frame->rawdata+3-i, 1);
+		}
+		frame->payload_offset += 2;
+		frame->payload_len = payload_len;
+		break;
+	case 127:
+		if(frame->rawdata_idx < 10) {
+			return 0;
+		}
+		for(i = 0; i < 8; i++) {
+			memcpy((void *)&payload_len+i, frame->rawdata+9-i, 1);
+		}
+		frame->payload_offset += 8;
+		frame->payload_len = payload_len;
+		break;
+	default:
+		frame->payload_len = payload_len_short;
+		break;
+
+	}
+	if(frame->rawdata_idx < frame->payload_offset + frame->payload_len) {
+		return 0;
+	}
+	return 1;
+}
 
 int libwsclient_open_connection(const char *host, const char *port) {
 	struct addrinfo hints, *servinfo, *p;
@@ -204,6 +356,8 @@ wsclient *libwsclient_new(const char *URI) {
 		fprintf(stderr, "Server did not send valid Sec-WebSocket-Accept header, failing.\n");
 		exit(10);
 	}
+
+
 	return client;
 }
 
@@ -222,7 +376,7 @@ int stricmp(const char *s1, const char *s2) {
 
 int libwsclient_send(wsclient *client, char *strdata)  {
 	if(strdata == NULL) {
-		fprintf(stderr, "Will not send empty message.\n");
+		fprintf(stderr, "NULL pointer psased to libwsclient_send\n");
 		return -1;
 	}
 	int sockfd = client->sockfd;
@@ -267,7 +421,7 @@ int libwsclient_send(wsclient *client, char *strdata)  {
 	memset(data, 0, frame_size);
 	payload_len_small |= 0x80;
 	memcpy(data, &finNopcode, 1);
-	memcpy(data+1, &payload_len_small, 1); //mask bit om, 7 bit payload len
+	memcpy(data+1, &payload_len_small, 1); //mask bit on, 7 bit payload len
 	if(payload_len_small == 126) {
 		payload_len &= 0xffff;
 		len_size = 2;

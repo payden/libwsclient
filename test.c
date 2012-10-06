@@ -9,13 +9,13 @@ int onopen(void) {
 	return 0;
 }
 
-int onmessage(char *msg, int64_t length) {
-	fprintf(stderr, "Received message (%ull): %s\n", length, msg);
+int onmessage(libwsclient_message *msg) {
+	fprintf(stderr, "Received (%llu): %s\n", msg->payload_len, msg->payload);
 	return 0;
 }
 
 int main(int argc, char **argv) {
-	wsclient *client = libwsclient_new("ws://localhost:3333/mtgox");
+	wsclient *client = libwsclient_new("ws://websocket.mtgox.com/mtgox");
 	if(!client) {
 		fprintf(stderr, "Unable to initialize new WS client.\n");
 		exit(1);
