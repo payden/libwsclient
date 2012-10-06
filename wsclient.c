@@ -13,7 +13,6 @@
 #include "wsclient.h"
 #include "sha1.h"
 
-
 void libwsclient_run(wsclient *c) {
 	char buf[1024];
 	int n, i;
@@ -41,16 +40,78 @@ void libwsclient_run(wsclient *c) {
 	free(c);
 }
 
-void libwsclient_onopen(wsclient *client, int (*cb)(void)) {
+void libwsclient_onclose(wsclient *client, int (*cb)(wsclient *c)) {
+	pthread_mutex_lock(&client->lock);
+	client->onclose = cb;
+	pthread_mutex_unlock(&client->lock);
+}
+
+void libwsclient_onopen(wsclient *client, int (*cb)(wsclient *c)) {
 	pthread_mutex_lock(&client->lock);
 	client->onopen = cb;
 	pthread_mutex_unlock(&client->lock);
 }
 
-void libwsclient_onmessage(wsclient *client, int (*cb)(libwsclient_message *msg)) {
+void libwsclient_onmessage(wsclient *client, int (*cb)(wsclient *c, libwsclient_message *msg)) {
 	pthread_mutex_lock(&client->lock);
 	client->onmessage = cb;
 	pthread_mutex_unlock(&client->lock);
+}
+
+void libwsclient_close(wsclient *client) {
+	char data[6];
+	int i = 0, n, mask_int;
+	struct timeval tv;
+	gettimeofday(&tv);
+	srand(tv.tv_sec * tv.tv_usec);
+	mask_int = rand();
+	memcpy(data+2, &mask_int, 4);
+	data[0] = 0x88;
+	data[1] = 0x80;
+	do {
+		n = send(client->sockfd, data, 6, 0);
+		i += n;
+	} while(i < 6 && n > 0);
+	pthread_mutex_lock(&client->lock);
+	client->flags |= CLIENT_SENT_CLOSE_FRAME;
+	pthread_mutex_unlock(&client->lock);
+}
+
+void libwsclient_handle_control_frame(wsclient *c, libwsclient_frame *ctl_frame) {
+	int i;
+	char mask[4];
+	int mask_int;
+	struct timeval tv;
+	gettimeofday(&tv);
+	srand(tv.tv_sec * tv.tv_usec);
+	mask_int = rand();
+	memcpy(mask, &mask_int, 4);
+	switch(ctl_frame->opcode) {
+		case 0x8:
+			fprintf(stderr, "Recived close frame.\n");
+			//close frame
+			if((c->flags & CLIENT_SENT_CLOSE_FRAME) == 0) {
+				//server request close.  Send close frame as acknowledgement.
+				for(i=0;i<ctl_frame->payload_len;i++)
+					*(ctl_frame->rawdata + ctl_frame->payload_offset + i) ^= (mask[i % 4] & 0xff); //mask payload
+				*(ctl_frame->rawdata + 1) |= 0x80; //turn mask bit on
+				i = 0;
+				while(i < ctl_frame->payload_offset + ctl_frame->payload_len) {
+					i += send(c->sockfd, ctl_frame->rawdata + i, ctl_frame->payload_offset + ctl_frame->payload_len - i, 0);
+				}
+			}
+			pthread_mutex_lock(&c->lock);
+			c->flags |= CLIENT_SHOULD_CLOSE;
+			pthread_mutex_unlock(&c->lock);
+			break;
+	}
+	libwsclient_frame *ptr = NULL;
+	ptr = ctl_frame->prev_frame; //This very well may be a NULL pointer, but just in case we preserve it.
+	free(ctl_frame->rawdata);
+	memset(ctl_frame, 0, sizeof(libwsclient_frame));
+	ctl_frame->prev_frame = ptr;
+	ctl_frame->rawdata = (char *)malloc(FRAME_CHUNK_LENGTH);
+	memset(ctl_frame->rawdata, 0, FRAME_CHUNK_LENGTH);
 }
 
 void libwsclient_in_data(wsclient *c, char in) {
@@ -75,7 +136,7 @@ void libwsclient_in_data(wsclient *c, char in) {
 		if(current->fin == 1) {
 			//is control frame
 			if((current->opcode & 0x08) == 0x08) {
-				//handle control frame
+				libwsclient_handle_control_frame(c, current);
 			} else {
 				libwsclient_dispatch_message(c, current);
 				c->current_frame = NULL;
@@ -125,7 +186,7 @@ void libwsclient_dispatch_message(wsclient *c, libwsclient_frame *current) {
 	msg->payload_len = message_offset;
 	msg->payload = message_payload;
 	if(c->onmessage != NULL) {
-		c->onmessage(msg);
+		c->onmessage(c, msg);
 	} else {
 		fprintf(stderr, "No onmessage call back registered with libwsclient.\n");
 	}
@@ -415,7 +476,7 @@ void *libwsclient_handshake_thread(void *ptr) {
 	pthread_mutex_lock(&client->lock);
 	client->flags &= ~CLIENT_CONNECTING;
 	if(client->onopen != NULL) {
-		client->onopen();
+		client->onopen(client);
 	}
 	pthread_mutex_unlock(&client->lock);
 	return NULL;

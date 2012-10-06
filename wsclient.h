@@ -8,6 +8,8 @@
 
 #define CLIENT_IS_SSL (1 << 0)
 #define CLIENT_CONNECTING (1 << 1)
+#define CLIENT_SHOULD_CLOSE (1 << 2)
+#define CLIENT_SENT_CLOSE_FRAME (1 << 3)
 
 
 #define REQUEST_HAS_CONNECTION (1 << 0)
@@ -41,10 +43,10 @@ typedef struct _wsclient {
 	char *URI;
 	int sockfd;
 	int flags;
-	int (*onopen)(void);
-	int (*onclose)(void);
-	int (*onerror)(void);
-	int (*onmessage)(libwsclient_message *msg);
+	int (*onopen)(struct _wsclient *);
+	int (*onclose)(struct _wsclient *);
+	int (*onerror)(struct _wsclient *);
+	int (*onmessage)(struct _wsclient *, libwsclient_message *msg);
 	libwsclient_frame *current_frame;
 
 } wsclient;
@@ -55,10 +57,12 @@ typedef struct _wsclient {
 wsclient *libwsclient_new(const char *URI);
 int libwsclient_open_connection(const char *host, const char *port);
 int stricmp(const char *s1, const char *s2);
+int libwsclient_complete_frame(libwsclient_frame *frame);
+void libwsclient_handle_control_frame(wsclient *c, libwsclient_frame *ctl_frame);
 void libwsclient_run(wsclient *c);
 void *libwsclient_handshake_thread(void *ptr);
 void libwsclient_cleanup_frames(libwsclient_frame *first);
 void libwsclient_in_data(wsclient *c, char in);
-int libwsclient_complete_frame(libwsclient_frame *frame);
 void libwsclient_dispatch_message(wsclient *c, libwsclient_frame *current);
+void libwsclient_close(wsclient *c);
 #endif /* WSCLIENT_H_ */
