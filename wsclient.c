@@ -104,6 +104,9 @@ void libwsclient_handle_control_frame(wsclient *c, libwsclient_frame *ctl_frame)
 			c->flags |= CLIENT_SHOULD_CLOSE;
 			pthread_mutex_unlock(&c->lock);
 			break;
+		default:
+			fprintf(stderr, "Unhandled control frame received.  Opcode: %d\n", ctl_frame->opcode);
+			break;
 	}
 	libwsclient_frame *ptr = NULL;
 	ptr = ctl_frame->prev_frame; //This very well may be a NULL pointer, but just in case we preserve it.
