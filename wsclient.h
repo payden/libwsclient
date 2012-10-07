@@ -39,6 +39,7 @@ typedef struct _libwsclient_message {
 
 typedef struct _wsclient {
 	pthread_t handshake_thread;
+	pthread_t run_thread;
 	pthread_mutex_t lock;
 	char *URI;
 	int sockfd;
@@ -60,6 +61,8 @@ int stricmp(const char *s1, const char *s2);
 int libwsclient_complete_frame(libwsclient_frame *frame);
 void libwsclient_handle_control_frame(wsclient *c, libwsclient_frame *ctl_frame);
 void libwsclient_run(wsclient *c);
+void libwsclient_finish(wsclient *client);
+void *libwsclient_run_thread(void *ptr);
 void *libwsclient_handshake_thread(void *ptr);
 void libwsclient_cleanup_frames(libwsclient_frame *first);
 void libwsclient_in_data(wsclient *c, char in);

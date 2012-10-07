@@ -14,8 +14,6 @@
 #include "sha1.h"
 
 void libwsclient_run(wsclient *c) {
-	char buf[1024];
-	int n, i;
 	pthread_mutex_lock(&c->lock);
 	if(c->flags & CLIENT_CONNECTING) {
 		pthread_mutex_unlock(&c->lock);
@@ -26,6 +24,13 @@ void libwsclient_run(wsclient *c) {
 		c->URI = NULL;
 	}
 	pthread_mutex_unlock(&c->lock);
+	pthread_create(&c->run_thread, NULL, libwsclient_run_thread, (void *)c);
+}
+
+void *libwsclient_run_thread(void *ptr) {
+	wsclient *c = (wsclient *)ptr;
+	char buf[1024];
+	int n, i;
 	do {
 		memset(buf, 0, 1024);
 		n = recv(c->sockfd, buf, 1023, 0);
@@ -38,6 +43,10 @@ void libwsclient_run(wsclient *c) {
 	}
 	close(c->sockfd);
 	free(c);
+}
+
+void libwsclient_finish(wsclient *client) {
+	pthread_join(client->run_thread, NULL);
 }
 
 void libwsclient_onclose(wsclient *client, int (*cb)(wsclient *c)) {
@@ -310,7 +319,7 @@ wsclient *libwsclient_new(const char *URI) {
 	client->flags |= CLIENT_CONNECTING;
 	pthread_mutex_unlock(&client->lock);
 
-	if(pthread_create(&(client->handshake_thread), NULL, libwsclient_handshake_thread, (void *)client)) {
+	if(pthread_create(&client->handshake_thread, NULL, libwsclient_handshake_thread, (void *)client)) {
 		perror("pthread");
 		exit(4);
 	}
@@ -478,10 +487,10 @@ void *libwsclient_handshake_thread(void *ptr) {
 
 	pthread_mutex_lock(&client->lock);
 	client->flags &= ~CLIENT_CONNECTING;
+	pthread_mutex_unlock(&client->lock);
 	if(client->onopen != NULL) {
 		client->onopen(client);
 	}
-	pthread_mutex_unlock(&client->lock);
 	return NULL;
 }
 
@@ -506,12 +515,9 @@ int libwsclient_send(wsclient *client, char *strdata)  {
 		return 0;
 	}
 	if(client->flags & CLIENT_CONNECTING) {
+		fprintf(stderr, "Attempted to send message before client was connected.  Not sending.\n");
 		pthread_mutex_unlock(&client->lock);
-		pthread_join(client->handshake_thread, NULL);
-		pthread_mutex_lock(&client->lock);
-		client->flags &= ~CLIENT_CONNECTING;
-		free(client->URI);
-		client->URI = NULL;
+		return 0;
 	}
 	int sockfd = client->sockfd;
 	pthread_mutex_unlock(&client->lock);
