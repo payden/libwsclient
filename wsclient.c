@@ -410,9 +410,9 @@ void *libwsclient_handshake_thread(void *ptr) {
 	memset(request_headers, 0, 1024);
 
 	if(strcmp(port, "80") != 0) {
-		snprintf(request_host, 256, "%s:%s", host, port);
+		snprintf(request_host, 255, "%s:%s", host, port);
 	} else {
-		snprintf(request_host, 256, "%s", host);
+		snprintf(request_host, 255, "%s", host);
 	}
 	snprintf(request_headers, 1024, "GET %s HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nHost: %s\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n", path, request_host, websocket_key);
 	n = send(client->sockfd, request_headers, strlen(request_headers), 0);
