@@ -17,7 +17,20 @@
 #define REQUEST_VALID_STATUS (1 << 2)
 #define REQUEST_VALID_ACCEPT (1 << 3)
 
-typedef struct _libwsclient_frame {
+#define WS_OPEN_CONNECTION_ADDRINFO_ERR -1
+#define WS_OPEN_CONNECTION_ADDRINFO_EXHAUSTED_ERR -2
+#define WS_RUN_THREAD_RECV_ERR -3
+#define WS_DO_CLOSE_SEND_ERR -4
+#define WS_HANDLE_CTL_FRAME_SEND_ERR -5
+#define WS_COMPLETE_FRAME_MASKED_ERR -6
+#define WS_DISPATCH_MESSAGE_NULL_PTR_ERR -7
+#define WS_SEND_AFTER_CLOSE_FRAME_ERR -8
+#define WS_SEND_DURING_CONNECT_ERR -9
+#define WS_SEND_NULL_DATA_ERR -10
+#define WS_SEND_DATA_TOO_LARGE_ERR -11
+#define WS_SEND_SEND_ERR -12
+
+typedef struct _wsclient_frame {
 	unsigned int fin;
 	unsigned int opcode;
 	unsigned int mask_offset;
@@ -26,16 +39,22 @@ typedef struct _libwsclient_frame {
 	unsigned int rawdata_sz;
 	unsigned long long payload_len;
 	char *rawdata;
-	struct _libwsclient_frame *next_frame;
-	struct _libwsclient_frame *prev_frame;
+	struct _wsclient_frame *next_frame;
+	struct _wsclient_frame *prev_frame;
 	unsigned char mask[4];
-} libwsclient_frame;
+} wsclient_frame;
 
-typedef struct _libwsclient_message {
+typedef struct _wsclient_message {
 	unsigned int opcode;
 	unsigned long long payload_len;
 	char *payload;
-} libwsclient_message;
+} wsclient_message;
+
+typedef struct _wsclient_error {
+	int code;
+	int extra_code;
+	char *str;
+} wsclient_error;
 
 typedef struct _wsclient {
 	pthread_t handshake_thread;
@@ -46,9 +65,9 @@ typedef struct _wsclient {
 	int flags;
 	int (*onopen)(struct _wsclient *);
 	int (*onclose)(struct _wsclient *);
-	int (*onerror)(struct _wsclient *);
-	int (*onmessage)(struct _wsclient *, libwsclient_message *msg);
-	libwsclient_frame *current_frame;
+	int (*onerror)(struct _wsclient *, wsclient_error *err);
+	int (*onmessage)(struct _wsclient *, wsclient_message *msg);
+	wsclient_frame *current_frame;
 
 } wsclient;
 
@@ -56,16 +75,37 @@ typedef struct _wsclient {
 //Function defs
 
 wsclient *libwsclient_new(const char *URI);
+wsclient_error *libwsclient_new_error(int errcode);
 int libwsclient_open_connection(const char *host, const char *port);
 int stricmp(const char *s1, const char *s2);
-int libwsclient_complete_frame(libwsclient_frame *frame);
-void libwsclient_handle_control_frame(wsclient *c, libwsclient_frame *ctl_frame);
+int libwsclient_complete_frame(wsclient *c, wsclient_frame *frame);
+void libwsclient_handle_control_frame(wsclient *c, wsclient_frame *ctl_frame);
 void libwsclient_run(wsclient *c);
 void libwsclient_finish(wsclient *client);
 void *libwsclient_run_thread(void *ptr);
 void *libwsclient_handshake_thread(void *ptr);
-void libwsclient_cleanup_frames(libwsclient_frame *first);
+void libwsclient_cleanup_frames(wsclient_frame *first);
 void libwsclient_in_data(wsclient *c, char in);
-void libwsclient_dispatch_message(wsclient *c, libwsclient_frame *current);
+void libwsclient_dispatch_message(wsclient *c, wsclient_frame *current);
 void libwsclient_close(wsclient *c);
+
+//Define errors
+char *errors[] = {
+		"Unknown error occured",
+		"Error while getting address info",
+		"Could connect to any address returned by getaddrinfo",
+		"Error sending data in client run thread",
+		"Error during libwsclient_close",
+		"Error sending while handling control frame",
+		"Received masked frame from server",
+		"Got null pointer during message dispatch",
+		"Attempted to send after close frame was sent",
+		"Attempted to send during connect",
+		"Attempted to send null payload",
+		"Attempted to send too much data",
+		"Error during send in libwsclient_send",
+		NULL
+};
+
+
 #endif /* WSCLIENT_H_ */

@@ -14,21 +14,25 @@
 #include "sha1.h"
 
 void libwsclient_run(wsclient *c) {
-	pthread_mutex_lock(&c->lock);
 	if(c->flags & CLIENT_CONNECTING) {
-		pthread_mutex_unlock(&c->lock);
+		fprintf(stderr, "Address of handshake thread: %08x\n", &c->handshake_thread);
+
 		pthread_join(c->handshake_thread, NULL);
 		pthread_mutex_lock(&c->lock);
 		c->flags &= ~CLIENT_CONNECTING;
 		free(c->URI);
 		c->URI = NULL;
+		pthread_mutex_unlock(&c->lock);
 	}
-	pthread_mutex_unlock(&c->lock);
-	pthread_create(&c->run_thread, NULL, libwsclient_run_thread, (void *)c);
+	if(c->sockfd) {
+		pthread_create(&c->run_thread, NULL, libwsclient_run_thread, (void *)c);
+	}
 }
 
 void *libwsclient_run_thread(void *ptr) {
 	wsclient *c = (wsclient *)ptr;
+	wsclient_error *err = NULL;
+	int sockfd;
 	char buf[1024];
 	int n, i;
 	do {
@@ -38,11 +42,24 @@ void *libwsclient_run_thread(void *ptr) {
 			libwsclient_in_data(c, buf[i]);
 
 	} while(n > 0);
-	if(n == -1) {
-		perror("recv");
+
+	if(n < 0) {
+		if(c->onerror) {
+			err = libwsclient_new_error(WS_RUN_THREAD_RECV_ERR);
+			err->extra_code = n;
+			c->onerror(c, err);
+			free(err);
+			err = NULL;
+		}
+
+	}
+
+	if(c->onclose) {
+		c->onclose(c);
 	}
 	close(c->sockfd);
 	free(c);
+	return NULL;
 }
 
 void libwsclient_finish(wsclient *client) {
@@ -61,13 +78,20 @@ void libwsclient_onopen(wsclient *client, int (*cb)(wsclient *c)) {
 	pthread_mutex_unlock(&client->lock);
 }
 
-void libwsclient_onmessage(wsclient *client, int (*cb)(wsclient *c, libwsclient_message *msg)) {
+void libwsclient_onmessage(wsclient *client, int (*cb)(wsclient *c, wsclient_message *msg)) {
 	pthread_mutex_lock(&client->lock);
 	client->onmessage = cb;
 	pthread_mutex_unlock(&client->lock);
 }
 
+void libwsclient_onerror(wsclient *client, int (*cb)(wsclient *c, wsclient_error *err)) {
+	pthread_mutex_lock(&client->lock);
+	client->onerror = cb;
+	pthread_mutex_unlock(&client->lock);
+}
+
 void libwsclient_close(wsclient *client) {
+	wsclient_error *err = NULL;
 	char data[6];
 	int i = 0, n, mask_int;
 	struct timeval tv;
@@ -81,13 +105,25 @@ void libwsclient_close(wsclient *client) {
 		n = send(client->sockfd, data, 6, 0);
 		i += n;
 	} while(i < 6 && n > 0);
+	if(n < 0) {
+		if(client->onerror) {
+			err = libwsclient_new_error(WS_DO_CLOSE_SEND_ERR);
+			err->extra_code = n;
+			client->onerror(client, err);
+			free(err);
+			err = NULL;
+		}
+		return;
+	}
 	pthread_mutex_lock(&client->lock);
 	client->flags |= CLIENT_SENT_CLOSE_FRAME;
 	pthread_mutex_unlock(&client->lock);
 }
 
-void libwsclient_handle_control_frame(wsclient *c, libwsclient_frame *ctl_frame) {
-	int i;
+void libwsclient_handle_control_frame(wsclient *c, wsclient_frame *ctl_frame) {
+	wsclient_error *err = NULL;
+	wsclient_frame *ptr = NULL;
+	int i, n = 0;
 	char mask[4];
 	int mask_int;
 	struct timeval tv;
@@ -95,9 +131,9 @@ void libwsclient_handle_control_frame(wsclient *c, libwsclient_frame *ctl_frame)
 	srand(tv.tv_sec * tv.tv_usec);
 	mask_int = rand();
 	memcpy(mask, &mask_int, 4);
+	pthread_mutex_lock(&c->lock);
 	switch(ctl_frame->opcode) {
 		case 0x8:
-			fprintf(stderr, "Recived close frame.\n");
 			//close frame
 			if((c->flags & CLIENT_SENT_CLOSE_FRAME) == 0) {
 				//server request close.  Send close frame as acknowledgement.
@@ -105,33 +141,43 @@ void libwsclient_handle_control_frame(wsclient *c, libwsclient_frame *ctl_frame)
 					*(ctl_frame->rawdata + ctl_frame->payload_offset + i) ^= (mask[i % 4] & 0xff); //mask payload
 				*(ctl_frame->rawdata + 1) |= 0x80; //turn mask bit on
 				i = 0;
-				while(i < ctl_frame->payload_offset + ctl_frame->payload_len) {
-					i += send(c->sockfd, ctl_frame->rawdata + i, ctl_frame->payload_offset + ctl_frame->payload_len - i, 0);
+				while(i < ctl_frame->payload_offset + ctl_frame->payload_len && n >= 0) {
+					n = send(c->sockfd, ctl_frame->rawdata + i, ctl_frame->payload_offset + ctl_frame->payload_len - i, 0);
+					i += n;
+				}
+				if(n < 0) {
+					if(c->onerror) {
+						err = libwsclient_new_error(WS_HANDLE_CTL_FRAME_SEND_ERR);
+						err->extra_code = n;
+						c->onerror(c, err);
+						free(err);
+						err = NULL;
+					}
 				}
 			}
-			pthread_mutex_lock(&c->lock);
 			c->flags |= CLIENT_SHOULD_CLOSE;
-			pthread_mutex_unlock(&c->lock);
 			break;
 		default:
 			fprintf(stderr, "Unhandled control frame received.  Opcode: %d\n", ctl_frame->opcode);
 			break;
 	}
-	libwsclient_frame *ptr = NULL;
+
 	ptr = ctl_frame->prev_frame; //This very well may be a NULL pointer, but just in case we preserve it.
 	free(ctl_frame->rawdata);
-	memset(ctl_frame, 0, sizeof(libwsclient_frame));
+	memset(ctl_frame, 0, sizeof(wsclient_frame));
 	ctl_frame->prev_frame = ptr;
 	ctl_frame->rawdata = (char *)malloc(FRAME_CHUNK_LENGTH);
 	memset(ctl_frame->rawdata, 0, FRAME_CHUNK_LENGTH);
+	pthread_mutex_unlock(&c->lock);
 }
 
-void libwsclient_in_data(wsclient *c, char in) {
-	libwsclient_frame *current = NULL, *new = NULL;
+inline void libwsclient_in_data(wsclient *c, char in) {
+	wsclient_frame *current = NULL, *new = NULL;
 	unsigned char payload_len_short;
+	pthread_mutex_lock(&c->lock);
 	if(c->current_frame == NULL) {
-		c->current_frame = (libwsclient_frame *)malloc(sizeof(libwsclient_frame));
-		memset(c->current_frame, 0, sizeof(libwsclient_frame));
+		c->current_frame = (wsclient_frame *)malloc(sizeof(wsclient_frame));
+		memset(c->current_frame, 0, sizeof(wsclient_frame));
 		c->current_frame->payload_len = -1;
 		c->current_frame->rawdata_sz = FRAME_CHUNK_LENGTH;
 		c->current_frame->rawdata = (char *)malloc(c->current_frame->rawdata_sz);
@@ -144,7 +190,8 @@ void libwsclient_in_data(wsclient *c, char in) {
 		memset(current->rawdata + current->rawdata_idx, 0, current->rawdata_sz - current->rawdata_idx);
 	}
 	*(current->rawdata + current->rawdata_idx++) = in;
-	if(libwsclient_complete_frame(current) == 1) {
+	pthread_mutex_unlock(&c->lock);
+	if(libwsclient_complete_frame(c, current) == 1) {
 		if(current->fin == 1) {
 			//is control frame
 			if((current->opcode & 0x08) == 0x08) {
@@ -154,8 +201,8 @@ void libwsclient_in_data(wsclient *c, char in) {
 				c->current_frame = NULL;
 			}
 		} else {
-			new = (libwsclient_frame *)malloc(sizeof(libwsclient_frame));
-			memset(new, 0, sizeof(libwsclient_frame));
+			new = (wsclient_frame *)malloc(sizeof(wsclient_frame));
+			memset(new, 0, sizeof(wsclient_frame));
 			new->payload_len = -1;
 			new->rawdata = (char *)malloc(FRAME_CHUNK_LENGTH);
 			memset(new->rawdata, 0, FRAME_CHUNK_LENGTH);
@@ -166,15 +213,21 @@ void libwsclient_in_data(wsclient *c, char in) {
 	}
 }
 
-void libwsclient_dispatch_message(wsclient *c, libwsclient_frame *current) {
+void libwsclient_dispatch_message(wsclient *c, wsclient_frame *current) {
 	unsigned long long message_payload_len, message_offset;
 	int message_opcode, i;
 	char *message_payload;
-	libwsclient_frame *first = NULL;
-	libwsclient_message *msg = NULL;
+	wsclient_frame *first = NULL;
+	wsclient_message *msg = NULL;
+	wsclient_error *err = NULL;
 	if(current == NULL) {
-		fprintf(stderr, "Somehow, null pointer passed to libwsclient_dispatch_message.\n");
-		exit(1);
+		if(c->onerror) {
+			err = libwsclient_new_error(WS_DISPATCH_MESSAGE_NULL_PTR_ERR);
+			c->onerror(c, err);
+			free(err);
+			err = NULL;
+		}
+		return;
 	}
 	message_offset = 0;
 	message_payload_len = current->payload_len;
@@ -192,8 +245,8 @@ void libwsclient_dispatch_message(wsclient *c, libwsclient_frame *current) {
 
 
 	libwsclient_cleanup_frames(first);
-	msg = (libwsclient_message *)malloc(sizeof(libwsclient_message));
-	memset(msg, 0, sizeof(libwsclient_message));
+	msg = (wsclient_message *)malloc(sizeof(wsclient_message));
+	memset(msg, 0, sizeof(wsclient_message));
 	msg->opcode = message_opcode;
 	msg->payload_len = message_offset;
 	msg->payload = message_payload;
@@ -205,9 +258,9 @@ void libwsclient_dispatch_message(wsclient *c, libwsclient_frame *current) {
 	free(msg->payload);
 	free(msg);
 }
-void libwsclient_cleanup_frames(libwsclient_frame *first) {
-	libwsclient_frame *this = NULL;
-	libwsclient_frame *next = first;
+void libwsclient_cleanup_frames(wsclient_frame *first) {
+	wsclient_frame *this = NULL;
+	wsclient_frame *next = first;
 	while(next != NULL) {
 		this = next;
 		next = this->next_frame;
@@ -218,7 +271,8 @@ void libwsclient_cleanup_frames(libwsclient_frame *first) {
 	}
 }
 
-int libwsclient_complete_frame(libwsclient_frame *frame) {
+int libwsclient_complete_frame(wsclient *c, wsclient_frame *frame) {
+	wsclient_error *err = NULL;
 	int payload_len_short, i;
 	unsigned long long payload_len = 0;
 	if(frame->rawdata_idx < 2) {
@@ -228,8 +282,16 @@ int libwsclient_complete_frame(libwsclient_frame *frame) {
 	frame->opcode = *(frame->rawdata) & 0x0f;
 	frame->payload_offset = 2;
 	if((*(frame->rawdata+1) & 0x80) != 0x0) {
-		fprintf(stderr, "Received masked frame from server.  FAIL\n");
-		exit(1);
+		if(c->onerror) {
+			err = libwsclient_new_error(WS_COMPLETE_FRAME_MASKED_ERR);
+			c->onerror(c, err);
+			free(err);
+			err = NULL;
+		}
+		pthread_mutex_lock(&c->lock);
+		c->flags |= CLIENT_SHOULD_CLOSE;
+		pthread_mutex_unlock(&c->lock);
+		return 0;
 	}
 	payload_len_short = *(frame->rawdata+1) & 0x7f;
 	switch(payload_len_short) {
@@ -271,26 +333,21 @@ int libwsclient_open_connection(const char *host, const char *port) {
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 	if((rv = getaddrinfo(host, port, &hints, &servinfo)) != 0) {
-		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
-		return -1;
+		return WS_OPEN_CONNECTION_ADDRINFO_ERR;
 	}
 
 	for(p = servinfo; p != NULL; p = p->ai_next) {
 		if((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
-			perror("socket");
 			continue;
 		}
 		if(connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
 			close(sockfd);
-			perror("connect");
 			continue;
 		}
 		break;
 	}
 	if(p == NULL) {
-		fprintf(stderr, "Failed to connect.\n");
-		freeaddrinfo(servinfo);
-		return -1;
+		return WS_OPEN_CONNECTION_ADDRINFO_EXHAUSTED_ERR;
 	}
 	return sockfd;
 }
@@ -327,6 +384,7 @@ wsclient *libwsclient_new(const char *URI) {
 }
 void *libwsclient_handshake_thread(void *ptr) {
 	wsclient *client = (wsclient *)ptr;
+	wsclient_error *err = NULL;
 	const char *URI = client->URI;
 	SHA1Context shactx;
 	const char *UUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -392,9 +450,14 @@ void *libwsclient_handshake_thread(void *ptr) {
 	strncpy(path, URI_copy+i, 254);
 	free(URI_copy);
 	sockfd = libwsclient_open_connection(host, port);
-	if(sockfd == -1) {
-		fprintf(stderr, "Error opening socket.\n");
-		exit(5);
+	if(sockfd < 0) {
+		if(client->onerror) {
+			err = libwsclient_new_error(sockfd);
+			client->onerror(client, err);
+			free(err);
+			err = NULL;
+		}
+		return NULL;
 	}
 	pthread_mutex_lock(&client->lock);
 	client->sockfd = sockfd;
@@ -507,25 +570,63 @@ int stricmp(const char *s1, const char *s2) {
         return c1 - c2;
 }
 
-int libwsclient_send(wsclient *client, char *strdata)  {
-	pthread_mutex_lock(&client->lock);
-	if(client->flags & CLIENT_SENT_CLOSE_FRAME) {
-		fprintf(stderr, "Trying to send data after sending close frame.  Not sending.\n");
-		pthread_mutex_unlock(&client->lock);
-		return 0;
+wsclient_error *libwsclient_new_error(int errcode) {
+	wsclient_error *err = NULL;
+	err = (wsclient_error *)malloc(sizeof(wsclient_error));
+	if(!err) {
+		//one of the few places we will fail and exit
+		fprintf(stderr, "Unable to allocate memory in libwsclient_new_error.\n");
+		exit(errcode);
 	}
-	if(client->flags & CLIENT_CONNECTING) {
-		fprintf(stderr, "Attempted to send message before client was connected.  Not sending.\n");
-		pthread_mutex_unlock(&client->lock);
-		return 0;
-	}
-	int sockfd = client->sockfd;
-	pthread_mutex_unlock(&client->lock);
-	if(strdata == NULL) {
-		fprintf(stderr, "NULL pointer psased to libwsclient_send\n");
-		return -1;
+	memset(err, 0, sizeof(wsclient_error));
+	err->code = errcode;
+	switch(err->code) {
+		case WS_OPEN_CONNECTION_ADDRINFO_ERR:
+			err->str = *(errors + 1);
+			break;
+		case WS_OPEN_CONNECTION_ADDRINFO_EXHAUSTED_ERR:
+			err->str = *(errors + 2);
+			break;
+		case WS_RUN_THREAD_RECV_ERR:
+			err->str = *(errors + 3);
+			break;
+		case WS_DO_CLOSE_SEND_ERR:
+			err->str = *(errors + 4);
+			break;
+		case WS_HANDLE_CTL_FRAME_SEND_ERR:
+			err->str = *(errors + 5);
+			break;
+		case WS_COMPLETE_FRAME_MASKED_ERR:
+			err->str = *(errors + 6);
+			break;
+		case WS_DISPATCH_MESSAGE_NULL_PTR_ERR:
+			err->str = *(errors + 7);
+			break;
+		case WS_SEND_AFTER_CLOSE_FRAME_ERR:
+			err->str = *(errors + 8);
+			break;
+		case WS_SEND_DURING_CONNECT_ERR:
+			err->str = *(errors + 9);
+			break;
+		case WS_SEND_NULL_DATA_ERR:
+			err->str = *(errors + 10);
+			break;
+		case WS_SEND_DATA_TOO_LARGE_ERR:
+			err->str = *(errors + 11);
+			break;
+		case WS_SEND_SEND_ERR:
+			err->str = *(errors + 12);
+			break;
+		default:
+			err->str = *errors;
+			break;
 	}
 
+	return err;
+}
+
+int libwsclient_send(wsclient *client, char *strdata)  {
+	wsclient_error *err = NULL;
 	struct timeval tv;
 	unsigned char mask[4];
 	unsigned int mask_int;
@@ -539,6 +640,40 @@ int libwsclient_send(wsclient *client, char *strdata)  {
 	int i;
 	unsigned int frame_size;
 	char *data;
+	pthread_mutex_lock(&client->lock);
+	if(client->flags & CLIENT_SENT_CLOSE_FRAME) {
+		if(client->onerror) {
+			err = libwsclient_new_error(WS_SEND_AFTER_CLOSE_FRAME_ERR);
+			client->onerror(client, err);
+			free(err);
+			err = NULL;
+		}
+		pthread_mutex_unlock(&client->lock);
+		return 0;
+	}
+	if(client->flags & CLIENT_CONNECTING) {
+		if(client->onerror) {
+			err = libwsclient_new_error(WS_SEND_DURING_CONNECT_ERR);
+			client->onerror(client, err);
+			free(err);
+			err = NULL;
+		}
+		pthread_mutex_unlock(&client->lock);
+		return 0;
+	}
+	int sockfd = client->sockfd;
+	pthread_mutex_unlock(&client->lock);
+	if(strdata == NULL) {
+		if(client->onerror) {
+			err = libwsclient_new_error(WS_SEND_NULL_DATA_ERR);
+			client->onerror(client, err);
+			free(err);
+			err = NULL;
+		}
+		return -1;
+	}
+
+
 	gettimeofday(&tv);
 	srand(tv.tv_usec * tv.tv_sec);
 	mask_int = rand();
@@ -561,7 +696,12 @@ int libwsclient_send(wsclient *client, char *strdata)  {
 		payload_len_small = 127;
 		payload_offset += 8;
 	} else {
-		fprintf(stderr, "Whoa man.  What are you trying to send?\n");
+		if(client->onerror) {
+			err = libwsclient_new_error(WS_SEND_DATA_TOO_LARGE_ERR);
+			client->onerror(client, err);
+			free(err);
+			err = NULL;
+		}
 		return -1;
 	}
 	memset(data, 0, frame_size);
@@ -589,10 +729,22 @@ int libwsclient_send(wsclient *client, char *strdata)  {
 	for(i=0;i<strlen(strdata);i++)
 		*(data+payload_offset+i) ^= mask[i % 4] & 0xff;
 	sent = 0;
+	i = 0;
 
-	while(sent < frame_size) {
-		sent += send(sockfd, data+sent, frame_size - sent, 0);
+	while(sent < frame_size && i >= 0) {
+		i = send(sockfd, data+sent, frame_size - sent, 0);
+		sent += i;
 	}
+
+	if(i < 0) {
+		if(client->onerror) {
+			err = libwsclient_new_error(WS_SEND_SEND_ERR);
+			client->onerror(client, err);
+			free(err);
+			err = NULL;
+		}
+	}
+
 	free(data);
 	return sent;
 }
