@@ -344,6 +344,7 @@ int libwsclient_open_connection(const char *host, const char *port) {
 		}
 		break;
 	}
+	freeaddrinfo(servinfo);
 	if(p == NULL) {
 		return WS_OPEN_CONNECTION_ADDRINFO_EXHAUSTED_ERR;
 	}
