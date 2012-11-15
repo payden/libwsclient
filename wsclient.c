@@ -15,8 +15,6 @@
 
 void libwsclient_run(wsclient *c) {
 	if(c->flags & CLIENT_CONNECTING) {
-		fprintf(stderr, "Address of handshake thread: %08x\n", &c->handshake_thread);
-
 		pthread_join(c->handshake_thread, NULL);
 		pthread_mutex_lock(&c->lock);
 		c->flags &= ~CLIENT_CONNECTING;
@@ -462,7 +460,6 @@ void *libwsclient_handshake_thread(void *ptr) {
 	pthread_mutex_lock(&client->lock);
 	client->sockfd = sockfd;
 	pthread_mutex_unlock(&client->lock);
-
 	//perform handshake
 	//generate nonce
 	srand(time(NULL));
@@ -481,10 +478,12 @@ void *libwsclient_handshake_thread(void *ptr) {
 	n = send(client->sockfd, request_headers, strlen(request_headers), 0);
 	z = 0;
 	memset(recv_buf, 0, 1024);
+	//TODO: actually handle data after \r\n\r\n in case server
+	// sends post-handshake data that gets coalesced in this recv
 	do {
 		n = recv(client->sockfd, recv_buf + z, 1023 - z, 0);
 		z += n;
-	} while((z < 4 || strcmp(recv_buf + z - 4, "\r\n\r\n") != 0) && n > 0);
+	} while((z < 4 || strstr(recv_buf, "\r\n\r\n") == NULL) && n > 0);
 	//parse recv_buf for response headers and assure Accept matches expected value
 	rcv = (char *)malloc(strlen(recv_buf)+1);
 	if(!rcv) {
