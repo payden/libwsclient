@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 
 #include <pthread.h>
 
@@ -349,6 +350,88 @@ int libwsclient_open_connection(const char *host, const char *port) {
 		return WS_OPEN_CONNECTION_ADDRINFO_EXHAUSTED_ERR;
 	}
 	return sockfd;
+}
+
+int libwsclient_helper_socket(wsclient *c, const char *path) {
+	socklen_t len;
+	int sockfd;
+	if(c->helper_sa.sun_family) {
+		fprintf(stderr, "Can only bind one UNIX socket for helper program communications.\n");
+		return WS_HELPER_ALREADY_BOUND_ERR;
+	}
+	c->helper_sa.sun_family = AF_UNIX;
+	strncpy(c->helper_sa.sun_path, path, sizeof(c->helper_sa.sun_path) - 1);
+	unlink(c->helper_sa.sun_path);
+	len = strlen(c->helper_sa.sun_path) + sizeof(c->helper_sa.sun_family);
+	sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if(sockfd == -1) {
+		fprintf(stderr, "Error creating UNIX socket.\n");
+		return WS_HELPER_CREATE_SOCK_ERR;
+	}
+
+	if(bind(sockfd, (struct sockaddr *)&c->helper_sa, len) == -1) {
+		fprintf(stderr, "Error binding UNIX socket.\n");
+		perror("bind");
+		close(sockfd);
+		memset(&c->helper_sa, 0, sizeof(struct sockaddr_un));
+		return WS_HELPER_BIND_ERR;
+	}
+
+	if(listen(sockfd, 5) == -1) {
+		fprintf(stderr, "Error listening on UNIX socket.\n");
+		close(sockfd);
+		memset(&c->helper_sa, 0, sizeof(struct sockaddr_un));
+		return WS_HELPER_LISTEN_ERR;
+	}
+
+	c->helper_sock = sockfd;
+	pthread_create(&c->helper_thread, NULL, libwsclient_helper_socket_thread, (void *)c);
+}
+
+void *libwsclient_helper_socket_thread(void *ptr) {
+	wsclient *c = ptr;
+	struct sockaddr_un remote;
+	socklen_t len;
+	int remote_sock, n, payload_idx, payload_sz;
+	char recv_buf[HELPER_RECV_BUF_SIZE];
+	char *payload = NULL, *payload_tmp = NULL;
+
+
+	for(;;) { //TODO: some way to cleanly break this loop
+		len = sizeof(remote);
+		if((remote_sock = accept(c->helper_sock, (struct sockaddr *)&remote, &len)) == -1) {
+			continue;
+		}
+		payload_idx = 0;
+		payload = (char *)malloc(HELPER_RECV_BUF_SIZE);
+		memset(payload, 0, payload_sz);
+		payload_sz = HELPER_RECV_BUF_SIZE;
+		do {
+			memset(recv_buf, 0, HELPER_RECV_BUF_SIZE);
+			n = recv(remote_sock, recv_buf, HELPER_RECV_BUF_SIZE - 1, 0);
+			if(n > 0) {
+				if(n + payload_idx >= payload_sz) {
+					payload_tmp = payload;
+					payload_sz += HELPER_RECV_BUF_SIZE;
+					payload = (char *)realloc(payload, payload_sz);
+					if(!payload) {
+						payload = payload_tmp;
+						fprintf(stderr, "Unable to realloc, data sent will be truncated.\n");
+						break;
+					}
+					memset(payload + payload_idx, 0, payload_sz - payload_idx);
+				}
+				memcpy(payload + payload_idx, recv_buf, n);
+				payload_idx += n;
+			}
+
+		} while(n > 0);
+		close(remote_sock);
+		libwsclient_send(c, payload);
+		free(payload);
+		payload = NULL;
+	}
+	return NULL;
 }
 
 wsclient *libwsclient_new(const char *URI) {

@@ -18,13 +18,12 @@ int onmessage(wsclient *c, wsclient_message *msg) {
 }
 
 int onopen(wsclient *c) {
-	fprintf(stderr, "onopen called.\n");
-	libwsclient_send(c, "testing::testing::demo.paydensutherland.com");
+	fprintf(stderr, "onopen called: %d\n", c->sockfd);
 	return 0;
 }
 
 int main(int argc, char **argv) {
-	wsclient *client = libwsclient_new("ws://ip6-localhost:8080");
+	wsclient *client = libwsclient_new("ws://websocket.mtgox.com/mtgox");
 	if(!client) {
 		fprintf(stderr, "Unable to initialize new WS client.\n");
 		exit(1);
@@ -33,6 +32,7 @@ int main(int argc, char **argv) {
 	libwsclient_onmessage(client, &onmessage);
 	libwsclient_onerror(client, &onerror);
 	libwsclient_onclose(client, &onclose);
+	libwsclient_helper_socket(client, "test.sock");
 	libwsclient_run(client);
 	libwsclient_finish(client);
 	return 0;

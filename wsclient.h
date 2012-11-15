@@ -1,10 +1,14 @@
 #include <stdint.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/un.h>
 
 #ifndef WSCLIENT_H_
 #define WSCLIENT_H_
 
 #define FRAME_CHUNK_LENGTH 1024
+#define HELPER_RECV_BUF_SIZE 1024
 
 #define CLIENT_IS_SSL (1 << 0)
 #define CLIENT_CONNECTING (1 << 1)
@@ -41,6 +45,10 @@
 #define WS_HANDSHAKE_NO_UPGRADE_ERR -16
 #define WS_HANDSHAKE_NO_CONNECTION_ERR -17
 #define WS_HANDSHAKE_BAD_ACCEPT_ERR -18
+#define WS_HELPER_ALREADY_BOUND_ERR -19
+#define WS_HELPER_CREATE_SOCK_ERR -20
+#define WS_HELPER_BIND_ERR -21
+#define WS_HELPER_LISTEN_ERR -22
 
 typedef struct _wsclient_frame {
 	unsigned int fin;
@@ -69,6 +77,7 @@ typedef struct _wsclient_error {
 } wsclient_error;
 
 typedef struct _wsclient {
+	pthread_t helper_thread;
 	pthread_t handshake_thread;
 	pthread_t run_thread;
 	pthread_mutex_t lock;
@@ -80,6 +89,8 @@ typedef struct _wsclient {
 	int (*onerror)(struct _wsclient *, wsclient_error *err);
 	int (*onmessage)(struct _wsclient *, wsclient_message *msg);
 	wsclient_frame *current_frame;
+	struct sockaddr_un helper_sa;
+	int helper_sock;
 
 } wsclient;
 
@@ -100,6 +111,8 @@ void libwsclient_cleanup_frames(wsclient_frame *first);
 void libwsclient_in_data(wsclient *c, char in);
 void libwsclient_dispatch_message(wsclient *c, wsclient_frame *current);
 void libwsclient_close(wsclient *c);
+int libwsclient_helper_socket(wsclient *c, const char *path);
+void *libwsclient_helper_socket_thread(void *ptr);
 
 //Define errors
 char *errors[] = {
