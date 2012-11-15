@@ -16,6 +16,7 @@ how to connect to an echo server using libwsclient calls.
 Also, to install:
 
 ./autogen.sh
+
 ./configure && make && sudo make install
 
 Then link your C program against websock: '-lwebsock'
