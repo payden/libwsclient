@@ -19,6 +19,6 @@ Also, to install:
 
 ./configure && make && sudo make install
 
-Then link your C program against websock: '-lwebsock'
+Then link your C program against websock: 'gcc -g -O2 -o test test.c -lwsclient'
 
 
