@@ -17,6 +17,12 @@
 #define REQUEST_VALID_STATUS (1 << 2)
 #define REQUEST_VALID_ACCEPT (1 << 3)
 
+#define WS_EXIT_MALLOC -1
+#define WS_EXIT_PTHREAD_MUTEX_INIT -2
+#define WS_EXIT_PTHREAD_CREATE -3
+#define WS_EXIT_BAD_SCHEME -4
+
+
 #define WS_OPEN_CONNECTION_ADDRINFO_ERR -1
 #define WS_OPEN_CONNECTION_ADDRINFO_EXHAUSTED_ERR -2
 #define WS_RUN_THREAD_RECV_ERR -3
@@ -29,6 +35,12 @@
 #define WS_SEND_NULL_DATA_ERR -10
 #define WS_SEND_DATA_TOO_LARGE_ERR -11
 #define WS_SEND_SEND_ERR -12
+#define WS_HANDSHAKE_REMOTE_CLOSED_ERR -13
+#define WS_HANDSHAKE_RECV_ERR -14
+#define WS_HANDSHAKE_BAD_STATUS_ERR -15
+#define WS_HANDSHAKE_NO_UPGRADE_ERR -16
+#define WS_HANDSHAKE_NO_CONNECTION_ERR -17
+#define WS_HANDSHAKE_BAD_ACCEPT_ERR -18
 
 typedef struct _wsclient_frame {
 	unsigned int fin;
@@ -104,6 +116,12 @@ char *errors[] = {
 		"Attempted to send null payload",
 		"Attempted to send too much data",
 		"Error during send in libwsclient_send",
+		"Remote end closed connection during handshake",
+		"Problem receiving data during handshake",
+		"Remote web server responded with bad HTTP status during handshake",
+		"Remote web server did not respond with upgrade header during handshake",
+		"Remote web server did not respond with connection header during handshake",
+		"Remote web server did not specify the appropriate Sec-WebSocket-Accept header during handshake",
 		NULL
 };
 

@@ -356,18 +356,18 @@ wsclient *libwsclient_new(const char *URI) {
 	client = (wsclient *)malloc(sizeof(wsclient));
 	if(!client) {
 		fprintf(stderr, "Unable to allocate memory in libwsclient_new.\n");
-		exit(1);
+		exit(WS_EXIT_MALLOC);
 	}
 	memset(client, 0, sizeof(wsclient));
 	if(pthread_mutex_init(&client->lock, NULL) != 0) {
 		fprintf(stderr, "Unable to init mutex in libwsclient_new.\n");
-		exit(5);
+		exit(WS_EXIT_PTHREAD_MUTEX_INIT);
 	}
 	pthread_mutex_lock(&client->lock);
 	client->URI = (char *)malloc(strlen(URI)+1);
 	if(!client->URI) {
 		fprintf(stderr, "Unable to allocate memory in libwsclient_new.\n");
-		exit(3);
+		exit(WS_EXIT_MALLOC);
 	}
 	memset(client->URI, 0, strlen(URI)+1);
 	strncpy(client->URI, URI, strlen(URI));
@@ -375,8 +375,8 @@ wsclient *libwsclient_new(const char *URI) {
 	pthread_mutex_unlock(&client->lock);
 
 	if(pthread_create(&client->handshake_thread, NULL, libwsclient_handshake_thread, (void *)client)) {
-		perror("pthread");
-		exit(4);
+		fprintf(stderr, "Unable to create handshake thread.\n");
+		exit(WS_EXIT_PTHREAD_CREATE);
 	}
 	return client;
 }
@@ -403,20 +403,20 @@ void *libwsclient_handshake_thread(void *ptr) {
 	URI_copy = (char *)malloc(strlen(URI)+1);
 	if(!URI_copy) {
 		fprintf(stderr, "Unable to allocate memory in libwsclient_new.\n");
-		exit(2);
+		exit(WS_EXIT_MALLOC);
 	}
 	memset(URI_copy, 0, strlen(URI)+1);
 	strncpy(URI_copy, URI, strlen(URI));
 	p = strstr(URI_copy, "://");
 	if(p == NULL) {
 		fprintf(stderr, "Malformed or missing scheme for URI.\n");
-		exit(3);
+		exit(WS_EXIT_BAD_SCHEME);
 	}
 	strncpy(scheme, URI_copy, p-URI_copy);
 	scheme[p-URI_copy] = '\0';
 	if(strcmp(scheme, "ws") != 0 && strcmp(scheme, "wss") != 0) {
 		fprintf(stderr, "Invalid scheme for URI: %s\n", scheme);
-		exit(4);
+		exit(WS_EXIT_BAD_SCHEME);
 	}
 	for(i=p-URI_copy+3,z=0;*(URI_copy+i) != '/' && *(URI_copy+i) != ':' && *(URI_copy+i) != '\0';i++,z++) {
 		host[z] = *(URI_copy+i);
@@ -484,11 +484,31 @@ void *libwsclient_handshake_thread(void *ptr) {
 		n = recv(client->sockfd, recv_buf + z, 1023 - z, 0);
 		z += n;
 	} while((z < 4 || strstr(recv_buf, "\r\n\r\n") == NULL) && n > 0);
+
+	if(n == 0) {
+		if(client->onerror) {
+			err = libwsclient_new_error(WS_HANDSHAKE_REMOTE_CLOSED_ERR);
+			client->onerror(client, err);
+			free(err);
+			err = NULL;
+		}
+		return NULL;
+	}
+	if(n < 0) {
+		if(client->onerror) {
+			err = libwsclient_new_error(WS_HANDSHAKE_RECV_ERR);
+			err->extra_code = n;
+			client->onerror(client, err);
+			free(err);
+			err = NULL;
+		}
+		return NULL;
+	}
 	//parse recv_buf for response headers and assure Accept matches expected value
 	rcv = (char *)malloc(strlen(recv_buf)+1);
 	if(!rcv) {
 		fprintf(stderr, "Unable to allocate memory in libwsclient_new.\n");
-		exit(6);
+		exit(WS_EXIT_MALLOC);
 	}
 	memset(rcv, 0, strlen(recv_buf)+1);
 	strncpy(rcv, recv_buf, strlen(recv_buf));
@@ -509,8 +529,13 @@ void *libwsclient_handshake_thread(void *ptr) {
 			p = strchr(p+1, ' ');
 			*p = '\0';
 			if(strcmp(tok, "HTTP/1.1 101") != 0 && strcmp(tok, "HTTP/1.0 101") != 0) {
-				fprintf(stderr, "Invalid HTTP version or invalid HTTP status from server: %s\n", tok);
-				exit(7);
+				if(client->onerror) {
+					err = libwsclient_new_error(WS_HANDSHAKE_BAD_STATUS_ERR);
+					client->onerror(client, err);
+					free(err);
+					err = NULL;
+				}
+				return NULL;
 			}
 			flags |= REQUEST_VALID_STATUS;
 		} else {
@@ -534,16 +559,31 @@ void *libwsclient_handshake_thread(void *ptr) {
 		}
 	}
 	if(!flags & REQUEST_HAS_UPGRADE) {
-		fprintf(stderr, "Response from server did not include Upgrade header, failing.\n");
-		exit(8);
+		if(client->onerror) {
+			err = libwsclient_new_error(WS_HANDSHAKE_NO_UPGRADE_ERR);
+			client->onerror(client, err);
+			free(err);
+			err = NULL;
+		}
+		return NULL;
 	}
 	if(!flags & REQUEST_HAS_CONNECTION) {
-		fprintf(stderr,  "Response from server did not include Connection header, failing.\n");
-		exit(9);
+		if(client->onerror) {
+			err = libwsclient_new_error(WS_HANDSHAKE_NO_CONNECTION_ERR);
+			client->onerror(client, err);
+			free(err);
+			err = NULL;
+		}
+		return NULL;
 	}
 	if(!flags & REQUEST_VALID_ACCEPT) {
-		fprintf(stderr, "Server did not send valid Sec-WebSocket-Accept header, failing.\n");
-		exit(10);
+		if(client->onerror) {
+			err = libwsclient_new_error(WS_HANDSHAKE_BAD_ACCEPT_ERR);
+			client->onerror(client, err);
+			free(err);
+			err = NULL;
+		}
+		return NULL;
 	}
 
 
@@ -615,6 +655,24 @@ wsclient_error *libwsclient_new_error(int errcode) {
 			break;
 		case WS_SEND_SEND_ERR:
 			err->str = *(errors + 12);
+			break;
+		case WS_HANDSHAKE_REMOTE_CLOSED_ERR:
+			err->str = *(errors + 13);
+			break;
+		case WS_HANDSHAKE_RECV_ERR:
+			err->str = *(errors + 14);
+			break;
+		case WS_HANDSHAKE_BAD_STATUS_ERR:
+			err->str = *(errors + 15);
+			break;
+		case WS_HANDSHAKE_NO_UPGRADE_ERR:
+			err->str = *(errors + 16);
+			break;
+		case WS_HANDSHAKE_NO_CONNECTION_ERR:
+			err->str = *(errors + 17);
+			break;
+		case WS_HANDSHAKE_BAD_ACCEPT_ERR:
+			err->str = *(errors + 18);
 			break;
 		default:
 			err->str = *errors;
