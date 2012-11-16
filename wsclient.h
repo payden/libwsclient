@@ -119,7 +119,7 @@ char *errors[] = {
 		"Unknown error occured",
 		"Error while getting address info",
 		"Could connect to any address returned by getaddrinfo",
-		"Error sending data in client run thread",
+		"Error receiving data in client run thread",
 		"Error during libwsclient_close",
 		"Error sending while handling control frame",
 		"Received masked frame from server",

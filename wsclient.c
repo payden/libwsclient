@@ -404,8 +404,9 @@ void *libwsclient_helper_socket_thread(void *ptr) {
 		}
 		payload_idx = 0;
 		payload = (char *)malloc(HELPER_RECV_BUF_SIZE);
-		memset(payload, 0, payload_sz);
 		payload_sz = HELPER_RECV_BUF_SIZE;
+		memset(payload, 0, payload_sz);
+
 		do {
 			memset(recv_buf, 0, HELPER_RECV_BUF_SIZE);
 			n = recv(remote_sock, recv_buf, HELPER_RECV_BUF_SIZE - 1, 0);
@@ -846,9 +847,8 @@ int libwsclient_send(wsclient *client, char *strdata)  {
 		return -1;
 	}
 	memset(data, 0, frame_size);
-	payload_len_small |= 0x80;
-	memcpy(data, &finNopcode, 1);
-	memcpy(data+1, &payload_len_small, 1); //mask bit on, 7 bit payload len
+	*data = finNopcode;
+	*(data+1) = payload_len_small | 0x80; //payload length with mask bit on
 	if(payload_len_small == 126) {
 		payload_len &= 0xffff;
 		len_size = 2;
