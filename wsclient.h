@@ -21,6 +21,9 @@
 #define REQUEST_VALID_STATUS (1 << 2)
 #define REQUEST_VALID_ACCEPT (1 << 3)
 
+#define WS_FRAGMENT_START (1 << 0)
+#define WS_FRAGMENT_FIN (1 << 7)
+
 #define WS_EXIT_MALLOC -1
 #define WS_EXIT_PTHREAD_MUTEX_INIT -2
 #define WS_EXIT_PTHREAD_CREATE -3
@@ -81,6 +84,7 @@ typedef struct _wsclient {
 	pthread_t handshake_thread;
 	pthread_t run_thread;
 	pthread_mutex_t lock;
+	pthread_mutex_t send_lock;
 	char *URI;
 	int sockfd;
 	int flags;
