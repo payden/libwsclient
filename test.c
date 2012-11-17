@@ -32,7 +32,7 @@ int onopen(wsclient *c) {
 
 int main(int argc, char **argv) {
 	//Initialize new wsclient * using specified URI
-	wsclient *client = libwsclient_new("ws://localhost:8080");
+	wsclient *client = libwsclient_new("ws://echo.websocket.org");
 	if(!client) {
 		fprintf(stderr, "Unable to initialize new WS client.\n");
 		exit(1);
