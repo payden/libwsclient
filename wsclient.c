@@ -868,7 +868,6 @@ int libwsclient_send_fragment(wsclient *client, char *strdata, int len, int flag
 		len_size = 2;
 		for(i = 0; i < len_size; i++) {
 			*(data+2+i) = *((char *)&payload_len+(len_size-i-1));
-			//memcpy(data+2+i, (void *)&payload_len+(len_size-i-1), 1);
 		}
 	}
 	if(payload_len_small == 127) {
@@ -876,7 +875,6 @@ int libwsclient_send_fragment(wsclient *client, char *strdata, int len, int flag
 		len_size = 8;
 		for(i = 0; i < len_size; i++) {
 			*(data+2+i) = *((char *)&payload_len+(len_size-i-1));
-			//memcpy(data+2+i, (void *)&payload_len+(len_size-i-1), 1);
 		}
 	}
 	for(i=0;i<4;i++)
