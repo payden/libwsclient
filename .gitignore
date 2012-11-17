@@ -1,5 +1,5 @@
 # http://www.gnu.org/software/automake
-
+config.h.in
 Makefile.in
 Makefile
 # http://www.gnu.org/software/autoconf

@@ -9,6 +9,9 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
+#include <signal.h>
+
+
 
 #include <pthread.h>
 
@@ -65,9 +68,14 @@ void *libwsclient_run_thread(void *ptr) {
 }
 
 void libwsclient_finish(wsclient *client) {
+	//TODO: handle UNIX socket helper thread shutdown better than killing it...  :P
+	if(client->helper_thread) {
+		pthread_kill(client->helper_thread, SIGINT);
+	}
 	if(client->run_thread) {
 		pthread_join(client->run_thread, NULL);
 	}
+
 }
 
 void libwsclient_onclose(wsclient *client, int (*cb)(wsclient *c)) {
@@ -378,6 +386,7 @@ int libwsclient_helper_socket(wsclient *c, const char *path) {
 		return WS_HELPER_CREATE_SOCK_ERR;
 	}
 
+
 	if(bind(sockfd, (struct sockaddr *)&c->helper_sa, len) == -1) {
 		fprintf(stderr, "Error binding UNIX socket.\n");
 		perror("bind");
@@ -409,6 +418,7 @@ void *libwsclient_helper_socket_thread(void *ptr) {
 
 	for(;;) { //TODO: some way to cleanly break this loop
 		len = sizeof(remote);
+
 		if((remote_sock = accept(c->helper_sock, (struct sockaddr *)&remote, &len)) == -1) {
 			continue;
 		}
