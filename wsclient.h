@@ -1,11 +1,23 @@
+#ifndef WSCLIENT_H_
+#define WSCLIENT_H_
+
 #include <stdint.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <stddef.h>
 
-#ifndef WSCLIENT_H_
-#define WSCLIENT_H_
+#include "config.h"
+
+
+#ifdef HAVE_LIBSSL
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/crypto.h>
+#endif
+
+
 
 #define FRAME_CHUNK_LENGTH 1024
 #define HELPER_RECV_BUF_SIZE 1024
@@ -23,6 +35,8 @@
 
 #define WS_FRAGMENT_START (1 << 0)
 #define WS_FRAGMENT_FIN (1 << 7)
+
+#define WS_FLAGS_SSL_INIT (1 << 0)
 
 #define WS_EXIT_MALLOC -1
 #define WS_EXIT_PTHREAD_MUTEX_INIT -2
@@ -95,7 +109,10 @@ typedef struct _wsclient {
 	wsclient_frame *current_frame;
 	struct sockaddr_un helper_sa;
 	int helper_sock;
-
+#ifdef HAVE_LIBSSL
+	SSL_CTX *ssl_ctx;
+	SSL *ssl;
+#endif
 } wsclient;
 
 
@@ -103,6 +120,8 @@ typedef struct _wsclient {
 
 wsclient *libwsclient_new(const char *URI);
 wsclient_error *libwsclient_new_error(int errcode);
+ssize_t _libwsclient_read(wsclient *c, void *buf, size_t length);
+ssize_t _libwsclient_write(wsclient *c, const void *buf, size_t length);
 int libwsclient_open_connection(const char *host, const char *port);
 int stricmp(const char *s1, const char *s2);
 int libwsclient_complete_frame(wsclient *c, wsclient_frame *frame);
@@ -141,6 +160,8 @@ char *errors[] = {
 		"Remote web server did not specify the appropriate Sec-WebSocket-Accept header during handshake",
 		NULL
 };
+
+int libwsclient_flags; //global flags variable
 
 
 #endif /* WSCLIENT_H_ */

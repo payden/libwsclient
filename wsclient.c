@@ -13,7 +13,9 @@
 #include <pthread.h>
 
 #include "wsclient.h"
+#include "config.h"
 #include "sha1.h"
+
 
 void libwsclient_run(wsclient *c) {
 	if(c->flags & CLIENT_CONNECTING) {
@@ -37,7 +39,7 @@ void *libwsclient_run_thread(void *ptr) {
 	int n, i;
 	do {
 		memset(buf, 0, 1024);
-		n = recv(c->sockfd, buf, 1023, 0);
+		n = _libwsclient_read(c, buf, 1023);
 		for(i = 0; i < n; i++)
 			libwsclient_in_data(c, buf[i]);
 
@@ -63,7 +65,9 @@ void *libwsclient_run_thread(void *ptr) {
 }
 
 void libwsclient_finish(wsclient *client) {
-	pthread_join(client->run_thread, NULL);
+	if(client->run_thread) {
+		pthread_join(client->run_thread, NULL);
+	}
 }
 
 void libwsclient_onclose(wsclient *client, int (*cb)(wsclient *c)) {
@@ -103,7 +107,7 @@ void libwsclient_close(wsclient *client) {
 	data[1] = 0x80;
 	pthread_mutex_lock(&client->send_lock);
 	do {
-		n = send(client->sockfd, data, 6, 0);
+		n = _libwsclient_write(client, data, 6);
 		i += n;
 	} while(i < 6 && n > 0);
 	pthread_mutex_unlock(&client->send_lock);
@@ -145,7 +149,7 @@ void libwsclient_handle_control_frame(wsclient *c, wsclient_frame *ctl_frame) {
 				i = 0;
 				pthread_mutex_lock(&c->send_lock);
 				while(i < ctl_frame->payload_offset + ctl_frame->payload_len && n >= 0) {
-					n = send(c->sockfd, ctl_frame->rawdata + i, ctl_frame->payload_offset + ctl_frame->payload_len - i, 0);
+					n = _libwsclient_write(c, ctl_frame->rawdata + i, ctl_frame->payload_offset + ctl_frame->payload_len - i);
 					i += n;
 				}
 				pthread_mutex_unlock(&c->send_lock);
@@ -519,36 +523,37 @@ void *libwsclient_handshake_thread(void *ptr) {
 		fprintf(stderr, "Invalid scheme for URI: %s\n", scheme);
 		exit(WS_EXIT_BAD_SCHEME);
 	}
+	if(strcmp(scheme, "ws") == 0) {
+		strncpy(port, "80", 9);
+	} else {
+		strncpy(port, "443", 9);
+		pthread_mutex_lock(&client->lock);
+		client->flags |= CLIENT_IS_SSL;
+		pthread_mutex_unlock(&client->lock);
+	}
 	for(i=p-URI_copy+3,z=0;*(URI_copy+i) != '/' && *(URI_copy+i) != ':' && *(URI_copy+i) != '\0';i++,z++) {
 		host[z] = *(URI_copy+i);
 	}
 	host[z] = '\0';
+	if(*(URI_copy+i) == ':') {
+		i++;
+		p = strchr(URI_copy+i, '/');
+		if(!p)
+			p = strchr(URI_copy+i, '\0');
+		strncpy(port, URI_copy+i, (p - (URI_copy+i)));
+		port[p-(URI_copy+i)] = '\0';
+		i += p-(URI_copy+i);
+	}
 	if(*(URI_copy+i) == '\0') {
 		//end of URI request path will be /
 		strncpy(path, "/", 1);
 	} else {
-		if(*(URI_copy+i) != ':') {
-			if(strcmp(scheme, "ws") == 0) {
-				strncpy(port, "80", 9);
-			} else {
-				strncpy(port, "443", 9);
-				pthread_mutex_lock(&client->lock);
-				client->flags |= CLIENT_IS_SSL;
-				pthread_mutex_unlock(&client->lock);
-			}
-		} else {
-			i++;
-			p = strchr(URI_copy+i, '/');
-			if(!p)
-				p = strchr(URI_copy+i, '\0');
-			strncpy(port, URI_copy+i, (p - (URI_copy+i)));
-			port[p-(URI_copy+i)] = '\0';
-			i += p-(URI_copy+i);
-		}
+		strncpy(path, URI_copy+i, 254);
 	}
-	strncpy(path, URI_copy+i, 254);
 	free(URI_copy);
 	sockfd = libwsclient_open_connection(host, port);
+
+
 	if(sockfd < 0) {
 		if(client->onerror) {
 			err = libwsclient_new_error(sockfd);
@@ -558,6 +563,21 @@ void *libwsclient_handshake_thread(void *ptr) {
 		}
 		return NULL;
 	}
+
+#ifdef HAVE_LIBSSL
+	if(client->flags & CLIENT_IS_SSL) {
+		if((libwsclient_flags & WS_FLAGS_SSL_INIT) == 0) {
+			SSL_library_init();
+			SSL_load_error_strings();
+			libwsclient_flags |= WS_FLAGS_SSL_INIT;
+		}
+		client->ssl_ctx = SSL_CTX_new(SSLv23_method());
+		client->ssl = SSL_new(client->ssl_ctx);
+		SSL_set_fd(client->ssl, sockfd);
+		SSL_connect(client->ssl);
+	}
+#endif
+
 	pthread_mutex_lock(&client->lock);
 	client->sockfd = sockfd;
 	pthread_mutex_unlock(&client->lock);
@@ -576,13 +596,13 @@ void *libwsclient_handshake_thread(void *ptr) {
 		snprintf(request_host, 255, "%s", host);
 	}
 	snprintf(request_headers, 1024, "GET %s HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nHost: %s\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n", path, request_host, websocket_key);
-	n = send(client->sockfd, request_headers, strlen(request_headers), 0);
+	n = _libwsclient_write(client, request_headers, strlen(request_headers));
 	z = 0;
 	memset(recv_buf, 0, 1024);
 	//TODO: actually handle data after \r\n\r\n in case server
 	// sends post-handshake data that gets coalesced in this recv
 	do {
-		n = recv(client->sockfd, recv_buf + z, 1023 - z, 0);
+		n = _libwsclient_read(client, recv_buf + z, 1023 - z);
 		z += n;
 	} while((z < 4 || strstr(recv_buf, "\r\n\r\n") == NULL) && n > 0);
 
@@ -886,10 +906,10 @@ int libwsclient_send_fragment(wsclient *client, char *strdata, int len, int flag
 	sent = 0;
 	i = 1;
 
-	//we don't need the send lock here.  It *should* have already been aquired before sending fragmented message
+	//we don't need the send lock here.  It *should* have already been acquired before sending fragmented message
 	//and will be released after last fragment sent.
 	while(sent < frame_size && i > 0) {
-		i = send(sockfd, data+sent, frame_size - sent, 0);
+		i = _libwsclient_write(client, data+sent, frame_size - sent);
 		sent += i;
 	}
 
@@ -943,7 +963,6 @@ int libwsclient_send(wsclient *client, char *strdata)  {
 		}
 		return 0;
 	}
-	sockfd = client->sockfd;
 	if(strdata == NULL) {
 		if(client->onerror) {
 			err = libwsclient_new_error(WS_SEND_NULL_DATA_ERR);
@@ -962,17 +981,14 @@ int libwsclient_send(wsclient *client, char *strdata)  {
 	finNopcode = 0x81; //FIN and text opcode.
 	if(payload_len <= 125) {
 		frame_size = 6 + payload_len;
-		data = (void *)malloc(frame_size);
 		payload_len_small = payload_len;
 
 	} else if(payload_len > 125 && payload_len <= 0xffff) {
 		frame_size = 8 + payload_len;
-		data = (void *)malloc(frame_size);
 		payload_len_small = 126;
 		payload_offset += 2;
 	} else if(payload_len > 0xffff && payload_len <= 0xffffffffffffffffLL) {
 		frame_size = 14 + payload_len;
-		data = (void *)malloc(frame_size);
 		payload_len_small = 127;
 		payload_offset += 8;
 	} else {
@@ -984,6 +1000,7 @@ int libwsclient_send(wsclient *client, char *strdata)  {
 		}
 		return -1;
 	}
+	data = (char *)malloc(frame_size);
 	memset(data, 0, frame_size);
 	*data = finNopcode;
 	*(data+1) = payload_len_small | 0x80; //payload length with mask bit on
@@ -991,14 +1008,14 @@ int libwsclient_send(wsclient *client, char *strdata)  {
 		payload_len &= 0xffff;
 		len_size = 2;
 		for(i = 0; i < len_size; i++) {
-			memcpy(data+2+i, (void *)&payload_len+(len_size-i-1), 1);
+			*(data+2+i) = *((char *)&payload_len+(len_size-i-1));
 		}
 	}
 	if(payload_len_small == 127) {
 		payload_len &= 0xffffffffffffffffLL;
 		len_size = 8;
 		for(i = 0; i < len_size; i++) {
-			memcpy(data+2+i, (void *)&payload_len+(len_size-i-1), 1);
+			*(data+2+i) = *((char *)&payload_len+(len_size-i-1));
 		}
 	}
 	for(i=0;i<4;i++)
@@ -1012,7 +1029,7 @@ int libwsclient_send(wsclient *client, char *strdata)  {
 
 	pthread_mutex_lock(&client->send_lock);
 	while(sent < frame_size && i >= 0) {
-		i = send(sockfd, data+sent, frame_size - sent, 0);
+		i = _libwsclient_write(client, data+sent, frame_size - sent);
 		sent += i;
 	}
 	pthread_mutex_unlock(&client->send_lock);
@@ -1028,6 +1045,30 @@ int libwsclient_send(wsclient *client, char *strdata)  {
 
 	free(data);
 	return sent;
+}
+
+ssize_t _libwsclient_read(wsclient *c, void *buf, size_t length) {
+#ifdef HAVE_LIBSSL
+	if(c->flags & CLIENT_IS_SSL) {
+		return (ssize_t)SSL_read(c->ssl, buf, length);
+	} else {
+#endif
+		return recv(c->sockfd, buf, length, 0);
+#ifdef HAVE_LIBSSL
+	}
+#endif
+}
+
+ssize_t _libwsclient_write(wsclient *c, const void *buf, size_t length) {
+#ifdef HAVE_LIBSSL
+	if(c->flags & CLIENT_IS_SSL) {
+		return (ssize_t)SSL_write(c->ssl, buf, length);
+	} else {
+#endif
+		return send(c->sockfd, buf, length, 0);
+#ifdef HAVE_LIBSSL
+	}
+#endif
 }
 
 
