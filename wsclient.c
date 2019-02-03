@@ -19,6 +19,30 @@
 #include "config.h"
 #include "sha1.h"
 
+int libwsclient_flags = 0;
+
+const char *errors[] = {
+		"Unknown error occured",
+		"Error while getting address info",
+		"Could connect to any address returned by getaddrinfo",
+		"Error receiving data in client run thread",
+		"Error during libwsclient_close",
+		"Error sending while handling control frame",
+		"Received masked frame from server",
+		"Got null pointer during message dispatch",
+		"Attempted to send after close frame was sent",
+		"Attempted to send during connect",
+		"Attempted to send null payload",
+		"Attempted to send too much data",
+		"Error during send in libwsclient_send",
+		"Remote end closed connection during handshake",
+		"Problem receiving data during handshake",
+		"Remote web server responded with bad HTTP status during handshake",
+		"Remote web server did not respond with upgrade header during handshake",
+		"Remote web server did not respond with connection header during handshake",
+		"Remote web server did not specify the appropriate Sec-WebSocket-Accept header during handshake",
+		NULL
+};
 
 void libwsclient_run(wsclient *c) {
 	if(c->flags & CLIENT_CONNECTING) {
