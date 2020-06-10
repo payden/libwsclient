@@ -109,6 +109,7 @@ typedef struct _wsclient {
 	wsclient_frame *current_frame;
 	struct sockaddr_un helper_sa;
 	int helper_sock;
+        void *user_data;
 #ifdef HAVE_LIBSSL
 	SSL_CTX *ssl_ctx;
 	SSL *ssl;
