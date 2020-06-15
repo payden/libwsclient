@@ -109,6 +109,7 @@ typedef struct _wsclient {
 	wsclient_frame *current_frame;
 	struct sockaddr_un helper_sa;
 	int helper_sock;
+        void *user_data;
 #ifdef HAVE_LIBSSL
 	SSL_CTX *ssl_ctx;
 	SSL *ssl;
@@ -136,6 +137,12 @@ void libwsclient_dispatch_message(wsclient *c, wsclient_frame *current);
 void libwsclient_close(wsclient *c);
 int libwsclient_helper_socket(wsclient *c, const char *path);
 void *libwsclient_helper_socket_thread(void *ptr);
+
+void libwsclient_onclose(wsclient *client, int (*cb)(wsclient *c));
+void libwsclient_onopen(wsclient *client, int (*cb)(wsclient *c));
+void libwsclient_onmessage(wsclient *client, int (*cb)(wsclient *c, wsclient_message *msg));
+void libwsclient_onerror(wsclient *client, int (*cb)(wsclient *c, wsclient_error *err));
+int libwsclient_send(wsclient *client, char *strdata);
 
 //Define errors
 char *errors[] = {
